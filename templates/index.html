@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>KYC Verification</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: linear-gradient(135deg,#1e3c72,#2a5298);
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            height:100vh;
+        }
+        .card{
+            background:white;
+            padding:30px;
+            border-radius:15px;
+            width:420px;
+            box-shadow:0 10px 25px rgba(0,0,0,0.3);
+        }
+        input,button{
+            width:100%;
+            padding:10px;
+            margin-top:10px;
+            border-radius:8px;
+            border:1px solid #ccc;
+        }
+        button{
+            background:#2a5298;
+            color:white;
+            font-weight:bold;
+            cursor:pointer;
+        }
+        video{
+            width:100%;
+            border-radius:10px;
+            margin-top:10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>KYC Verification</h2>
+
+    <form action="/upload" method="POST" enctype="multipart/form-data">
+
+        <input type="text" name="name" placeholder="Full Name" required>
+        <input type="text" name="dob" placeholder="DOB (YYYY or DD/MM/YYYY)" required>
+
+        <label>Upload Aadhaar</label>
+        <input type="file" name="aadhaar" required>
+
+        <label>Live Selfie</label>
+        <video id="video" autoplay></video>
+        <button type="button" onclick="capture()">Capture Selfie</button>
+
+        <canvas id="canvas" style="display:none;"></canvas>
+        <input type="hidden" name="selfie_data" id="selfie_data">
+
+        <button type="submit">Verify Identity</button>
+    </form>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const selfieInput = document.getElementById('selfie_data');
+
+navigator.mediaDevices.getUserMedia({ video: true })
+.then(stream => {
+    video.srcObject = stream;
+})
+.catch(err => {
+    alert("Camera access denied!");
+});
+
+function capture() {
+
+    const context = canvas.getContext('2d');
+
+    const width = 400;
+    const height = (video.videoHeight / video.videoWidth) * width;
+
+    canvas.width = width;
+    canvas.height = height;
+
+    context.drawImage(video, 0, 0, width, height);
+
+    const imageData = canvas.toDataURL("image/jpeg", 0.6);
+
+    selfieInput.value = imageData;
+
+    alert("Selfie Captured!");
+}
+</script>
+
+</body>
+</html>
