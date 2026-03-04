@@ -3,6 +3,7 @@ import base64
 import numpy as np
 import cv2
 import pytesseract
+import re
 from flask import Flask, request, render_template_string
 from supabase import create_client
 from rapidfuzz import fuzz
@@ -18,13 +19,13 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------------- UI ----------------
+# ---------------- HTML UI ----------------
 
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>KYC Verification</title>
+<title>KYC Verification System</title>
 
 <style>
 
@@ -62,6 +63,7 @@ cursor:pointer;
 video{
 width:100%;
 border-radius:10px;
+margin-top:10px;
 }
 
 </style>
@@ -150,7 +152,25 @@ def compare_faces(img1,img2):
     return score*100
 
 
-# ---------------- ROUTE ----------------
+# ---------------- AADHAAR EXTRACTION ----------------
+
+def extract_aadhaar(text):
+
+    pattern = r"\d{4}\s?\d{4}\s?\d{4}"
+    match = re.search(pattern,text)
+
+    if match:
+
+        aadhaar = match.group().replace(" ","")
+
+        masked = "XXXX-XXXX-" + aadhaar[-4:]
+
+        return masked
+
+    return "XXXX-XXXX-XXXX"
+
+
+# ---------------- MAIN ROUTE ----------------
 
 @app.route("/",methods=["GET","POST"])
 
@@ -167,7 +187,7 @@ def home():
         if not selfie_data:
             return "<h2>Please capture selfie first</h2>"
 
-        # decode selfie
+        # Decode selfie
         header,encoded=selfie_data.split(",",1)
 
         selfie_bytes=base64.b64decode(encoded)
@@ -176,7 +196,7 @@ def home():
 
         selfie_img=cv2.imdecode(selfie_np,cv2.IMREAD_COLOR)
 
-        # decode aadhaar
+        # Decode Aadhaar
         aadhaar_np=np.frombuffer(aadhaar_file.read(),np.uint8)
 
         aadhaar_img=cv2.imdecode(aadhaar_np,cv2.IMREAD_COLOR)
@@ -186,21 +206,22 @@ def home():
 
         extracted_text=pytesseract.image_to_string(gray)
 
-        # name match
+        # Name score
         name_score=fuzz.partial_ratio(name.lower(),extracted_text.lower())
 
-        # dob match
+        # DOB score
         dob_score=fuzz.partial_ratio(dob.lower(),extracted_text.lower())
 
-        # face match
+        # Face score
         face_score=compare_faces(aadhaar_img,selfie_img)
 
+        # Aadhaar masking
+        masked_aadhaar=extract_aadhaar(extracted_text)
+
+        # Total score
         total_score=int((name_score+face_score)/2)
 
-        # mask aadhaar example
-        masked_aadhaar="XXXX-XXXX-XXXX"
-
-        # decision
+        # Verification decision
         if name_score>60 and dob_score>60 and face_score>15:
 
             status="Verified"
@@ -209,7 +230,7 @@ def home():
 
             status="Rejected"
 
-        # store in supabase
+        # Save in Supabase
         supabase.table("verified_users").insert({
 
             "full_name":name,
@@ -229,7 +250,7 @@ def home():
 
         <h2>KYC {status}</h2>
 
-        <h3>Scores</h3>
+        <h3>Verification Scores</h3>
 
         <p>Name Score: {name_score}</p>
         <p>DOB Score: {dob_score}</p>
