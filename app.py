@@ -1,4 +1,5 @@
 import os
+import base64
 import numpy as np
 import cv2
 import pytesseract
@@ -9,13 +10,11 @@ from skimage.metrics import structural_similarity as ssim
 
 app = Flask(__name__)
 
-# ---------------- SUPABASE ----------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------------- UI ----------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -49,17 +48,9 @@ button {
     font-weight: bold;
     cursor: pointer;
 }
-label {
-    display: block;
-    text-align: left;
-    margin-top: 10px;
-    font-weight: bold;
-}
-small {
-    display: block;
-    text-align: left;
-    font-size: 12px;
-    color: #ddd;
+video {
+    width: 100%;
+    border-radius: 10px;
 }
 </style>
 </head>
@@ -70,30 +61,50 @@ small {
 <div class="container">
 <form method="POST" enctype="multipart/form-data">
 
-<label>Full Name (as in Aadhaar)</label>
-<input type="text" name="name" placeholder="Enter Full Name" required>
+<input type="text" name="name" placeholder="Full Name (as in Aadhaar)" required>
+<input type="text" name="dob" placeholder="DOB (as in Aadhaar)" required>
 
-<label>Date of Birth (exact format as in Aadhaar)</label>
-<input type="text" name="dob" placeholder="Example: 2003 or 12/05/2003" required>
-
-<label>Upload Aadhaar Card Image</label>
-<small>Please upload clear front side image of Aadhaar</small>
+<label>Upload Aadhaar Image</label>
 <input type="file" name="aadhaar" accept="image/*" required>
 
-<label>Capture Live Selfie</label>
-<small>On mobile this will open front camera automatically</small>
-<input type="file" name="selfie" accept="image/*" capture="user" required>
+<label>Live Selfie</label>
+<video id="video" autoplay></video>
+<button type="button" onclick="capture()">Capture Selfie</button>
+
+<input type="hidden" name="selfie_data" id="selfie_data">
 
 <button type="submit">Verify KYC</button>
 
 </form>
 </div>
 
+<script>
+const video = document.getElementById('video');
+
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
+.then(stream => {
+    video.srcObject = stream;
+})
+.catch(err => {
+    alert("Camera access denied!");
+});
+
+function capture() {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0);
+    const dataURL = canvas.toDataURL("image/jpeg");
+    document.getElementById("selfie_data").value = dataURL;
+    alert("Selfie captured!");
+}
+</script>
+
 </body>
 </html>
 """
 
-# ---------------- ROUTE ----------------
 @app.route("/", methods=["GET", "POST"])
 def home():
 
@@ -103,23 +114,29 @@ def home():
         dob = request.form["dob"]
 
         aadhaar_file = request.files["aadhaar"]
-        selfie_file = request.files["selfie"]
+        selfie_data = request.form["selfie_data"]
 
-        # Read images in memory (NOT saved on disk)
-        aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
-        selfie_np = np.frombuffer(selfie_file.read(), np.uint8)
+        if not selfie_data:
+            return "<h2 style='color:red;text-align:center;'>Please capture selfie first ❌</h2>"
 
-        aadhaar_img = cv2.imdecode(aadhaar_np, cv2.IMREAD_COLOR)
+        # Decode selfie
+        header, encoded = selfie_data.split(",", 1)
+        selfie_bytes = base64.b64decode(encoded)
+        selfie_np = np.frombuffer(selfie_bytes, np.uint8)
         selfie_img = cv2.imdecode(selfie_np, cv2.IMREAD_COLOR)
 
-        # -------- OCR ----------
+        # Decode Aadhaar
+        aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
+        aadhaar_img = cv2.imdecode(aadhaar_np, cv2.IMREAD_COLOR)
+
+        # OCR
         gray = cv2.cvtColor(aadhaar_img, cv2.COLOR_BGR2GRAY)
         extracted_text = pytesseract.image_to_string(gray)
 
         name_score = fuzz.partial_ratio(name.lower(), extracted_text.lower())
         dob_score = fuzz.partial_ratio(dob.lower(), extracted_text.lower())
 
-        # -------- Face Match ----------
+        # Face match
         aadhaar_resized = cv2.resize(aadhaar_img, (200, 200))
         selfie_resized = cv2.resize(selfie_img, (200, 200))
 
@@ -128,7 +145,6 @@ def home():
 
         face_score = ssim(aadhaar_gray, selfie_gray) * 100
 
-        # -------- Decision ----------
         if name_score > 60 and dob_score > 60 and face_score > 40:
 
             supabase.table("verified_users").insert({
@@ -143,7 +159,6 @@ def home():
             return "<h2 style='color:red;text-align:center;'>KYC Rejected ❌</h2>"
 
     return render_template_string(HTML_PAGE)
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
