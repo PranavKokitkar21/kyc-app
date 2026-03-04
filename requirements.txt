@@ -3,7 +3,6 @@ gunicorn==21.2.0
 opencv-python-headless==4.13.0.92
 pytesseract==0.3.13
 RapidFuzz==3.14.3
-scikit-image==0.26.0
 numpy==2.4.2
 Pillow==12.1.1
 supabase==2.28.0

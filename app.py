@@ -6,10 +6,10 @@ import pytesseract
 from flask import Flask, request, render_template_string
 from supabase import create_client
 from rapidfuzz import fuzz
-from skimage.metrics import structural_similarity as ssim
 
 app = Flask(__name__)
 
+# Supabase setup
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -54,11 +54,13 @@ video {
 }
 </style>
 </head>
+
 <body>
 
 <h1>KYC Verification System</h1>
 
 <div class="container">
+
 <form method="POST" enctype="multipart/form-data">
 
 <input type="text" name="name" placeholder="Full Name (as in Aadhaar)" required>
@@ -67,7 +69,7 @@ video {
 <label>Upload Aadhaar Image</label>
 <input type="file" name="aadhaar" accept="image/*" required>
 
-<label>Live Selfie</label>
+<label>Capture Live Selfie</label>
 <video id="video" autoplay></video>
 <button type="button" onclick="capture()">Capture Selfie</button>
 
@@ -76,9 +78,11 @@ video {
 <button type="submit">Verify KYC</button>
 
 </form>
+
 </div>
 
 <script>
+
 const video = document.getElementById('video');
 
 navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
@@ -86,26 +90,55 @@ navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
     video.srcObject = stream;
 })
 .catch(err => {
-    alert("Camera access denied!");
+    alert("Camera access denied");
 });
 
 function capture() {
+
     const canvas = document.createElement("canvas");
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0);
+
+    ctx.drawImage(video,0,0);
+
     const dataURL = canvas.toDataURL("image/jpeg");
+
     document.getElementById("selfie_data").value = dataURL;
-    alert("Selfie captured!");
+
+    alert("Selfie captured");
+
 }
+
 </script>
 
 </body>
 </html>
 """
 
-@app.route("/", methods=["GET", "POST"])
+# Histogram face comparison
+def compare_faces_histogram(img1, img2):
+
+    img1 = cv2.resize(img1,(200,200))
+    img2 = cv2.resize(img2,(200,200))
+
+    img1_gray = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    img2_gray = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+    hist1 = cv2.calcHist([img1_gray],[0],None,[256],[0,256])
+    hist2 = cv2.calcHist([img2_gray],[0],None,[256],[0,256])
+
+    cv2.normalize(hist1,hist1)
+    cv2.normalize(hist2,hist2)
+
+    score = cv2.compareHist(hist1,hist2,cv2.HISTCMP_CORREL)
+
+    return score*100
+
+
+@app.route("/", methods=["GET","POST"])
 def home():
 
     if request.method == "POST":
@@ -116,49 +149,46 @@ def home():
         aadhaar_file = request.files["aadhaar"]
         selfie_data = request.form["selfie_data"]
 
-        if not selfie_data:
-            return "<h2 style='color:red;text-align:center;'>Please capture selfie first ❌</h2>"
+        if selfie_data == "":
+            return "<h2 style='color:red;text-align:center'>Please capture selfie</h2>"
 
         # Decode selfie
-        header, encoded = selfie_data.split(",", 1)
+        header, encoded = selfie_data.split(",",1)
         selfie_bytes = base64.b64decode(encoded)
-        selfie_np = np.frombuffer(selfie_bytes, np.uint8)
-        selfie_img = cv2.imdecode(selfie_np, cv2.IMREAD_COLOR)
+
+        selfie_np = np.frombuffer(selfie_bytes,np.uint8)
+        selfie_img = cv2.imdecode(selfie_np,cv2.IMREAD_COLOR)
 
         # Decode Aadhaar
-        aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
-        aadhaar_img = cv2.imdecode(aadhaar_np, cv2.IMREAD_COLOR)
+        aadhaar_np = np.frombuffer(aadhaar_file.read(),np.uint8)
+        aadhaar_img = cv2.imdecode(aadhaar_np,cv2.IMREAD_COLOR)
 
         # OCR
-        gray = cv2.cvtColor(aadhaar_img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(aadhaar_img,cv2.COLOR_BGR2GRAY)
         extracted_text = pytesseract.image_to_string(gray)
 
-        name_score = fuzz.partial_ratio(name.lower(), extracted_text.lower())
-        dob_score = fuzz.partial_ratio(dob.lower(), extracted_text.lower())
+        name_score = fuzz.partial_ratio(name.lower(),extracted_text.lower())
+        dob_score = fuzz.partial_ratio(dob.lower(),extracted_text.lower())
 
-        # Face match
-        aadhaar_resized = cv2.resize(aadhaar_img, (200, 200))
-        selfie_resized = cv2.resize(selfie_img, (200, 200))
+        # Face comparison
+        face_score = compare_faces_histogram(aadhaar_img,selfie_img)
 
-        aadhaar_gray = cv2.cvtColor(aadhaar_resized, cv2.COLOR_BGR2GRAY)
-        selfie_gray = cv2.cvtColor(selfie_resized, cv2.COLOR_BGR2GRAY)
-
-        face_score = ssim(aadhaar_gray, selfie_gray) * 100
-
-        if name_score > 60 and dob_score > 60 and face_score > 40:
+        if name_score > 60 and dob_score > 60 and face_score > 30:
 
             supabase.table("verified_users").insert({
                 "name_score": name_score,
-                "face_score": round(face_score, 2),
+                "face_score": round(face_score,2),
                 "status": "Verified"
             }).execute()
 
-            return "<h2 style='color:lightgreen;text-align:center;'>KYC Verified Successfully ✅</h2>"
+            return "<h2 style='color:lightgreen;text-align:center'>KYC Verified Successfully</h2>"
 
         else:
-            return "<h2 style='color:red;text-align:center;'>KYC Rejected ❌</h2>"
+
+            return "<h2 style='color:red;text-align:center'>KYC Rejected</h2>"
 
     return render_template_string(HTML_PAGE)
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0",port=10000)
