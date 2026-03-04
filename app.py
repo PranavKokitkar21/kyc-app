@@ -7,16 +7,19 @@ from flask import Flask, request, render_template_string
 from supabase import create_client
 from rapidfuzz import fuzz
 from skimage.metrics import structural_similarity as ssim
+from datetime import datetime
 
 app = Flask(__name__)
 
 # ---------------- SUPABASE ----------------
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------------- UI ----------------
+
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -62,7 +65,6 @@ border-radius:10px;
 }
 
 </style>
-
 </head>
 
 <body>
@@ -105,7 +107,7 @@ video.srcObject=stream;
 })
 
 .catch(err=>{
-alert("Camera access denied");
+alert("Camera permission denied");
 });
 
 function capture(){
@@ -123,7 +125,7 @@ const dataURL=canvas.toDataURL("image/jpeg");
 
 document.getElementById("selfie_data").value=dataURL;
 
-alert("Selfie captured");
+alert("Selfie captured successfully");
 
 }
 
@@ -134,6 +136,7 @@ alert("Selfie captured");
 """
 
 # ---------------- FACE MATCH ----------------
+
 def compare_faces(img1,img2):
 
     img1=cv2.resize(img1,(200,200))
@@ -148,6 +151,7 @@ def compare_faces(img1,img2):
 
 
 # ---------------- ROUTE ----------------
+
 @app.route("/",methods=["GET","POST"])
 
 def home():
@@ -158,10 +162,10 @@ def home():
         dob=request.form["dob"]
 
         aadhaar_file=request.files["aadhaar"]
-        selfie_data=request.form["selfie_data"]
+        selfie_data=request.form.get("selfie_data")
 
-        if selfie_data=="":
-            return "<h2 style='color:red;text-align:center'>Please capture selfie</h2>"
+        if not selfie_data:
+            return "<h2>Please capture selfie first</h2>"
 
         # decode selfie
         header,encoded=selfie_data.split(",",1)
@@ -182,45 +186,56 @@ def home():
 
         extracted_text=pytesseract.image_to_string(gray)
 
+        # name match
         name_score=fuzz.partial_ratio(name.lower(),extracted_text.lower())
 
+        # dob match
         dob_score=fuzz.partial_ratio(dob.lower(),extracted_text.lower())
 
-        # face comparison
+        # face match
         face_score=compare_faces(aadhaar_img,selfie_img)
 
+        total_score=int((name_score+face_score)/2)
+
+        # mask aadhaar example
+        masked_aadhaar="XXXX-XXXX-XXXX"
+
         # decision
-        if name_score>70 and dob_score>60 and face_score>10:
+        if name_score>60 and dob_score>60 and face_score>15:
 
-            supabase.table("verified_users").insert({
-
-                "name_score":name_score,
-                "face_score":round(face_score,2),
-                "status":"Verified"
-
-            }).execute()
-
-            return f"""
-            <h2 style='color:lightgreen'>KYC Verified Successfully</h2>
-
-            <h3>Scores</h3>
-
-            <p>Name Score: {name_score}</p>
-            <p>DOB Score: {dob_score}</p>
-            <p>Face Score: {round(face_score,2)}</p>
-            """
+            status="Verified"
 
         else:
 
-            return f"""
-            <h2 style='color:red'>KYC Rejected</h2>
+            status="Rejected"
 
-            <h3>Scores</h3>
+        # store in supabase
+        supabase.table("verified_users").insert({
 
-            <p>Name Score: {name_score}</p>
-            <p>DOB Score: {dob_score}</p>
-            <p>Face Score: {round(face_score,2)}</p>
-            """
+            "full_name":name,
+            "dob":dob,
+            "masked_aadhaar":masked_aadhaar,
+            "aadhaar_image_url":None,
+            "selfie_image_url":None,
+            "face_score":round(face_score,2),
+            "name_score":round(name_score,2),
+            "total_score":total_score,
+            "kyc_status":status,
+            "verified_at":datetime.utcnow().isoformat()
+
+        }).execute()
+
+        return f"""
+
+        <h2>KYC {status}</h2>
+
+        <h3>Scores</h3>
+
+        <p>Name Score: {name_score}</p>
+        <p>DOB Score: {dob_score}</p>
+        <p>Face Score: {round(face_score,2)}</p>
+
+        """
 
     return render_template_string(HTML_PAGE)
 
