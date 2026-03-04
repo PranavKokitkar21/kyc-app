@@ -81,7 +81,7 @@ small {
 <input type="file" name="aadhaar" accept="image/*" required>
 
 <label>Capture Live Selfie</label>
-<small>Use front camera and ensure good lighting</small>
+<small>On mobile this will open front camera automatically</small>
 <input type="file" name="selfie" accept="image/*" capture="user" required>
 
 <button type="submit">Verify KYC</button>
@@ -105,21 +105,21 @@ def home():
         aadhaar_file = request.files["aadhaar"]
         selfie_file = request.files["selfie"]
 
-        # Read images in memory (NO local saving)
+        # Read images in memory (NOT saved on disk)
         aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
         selfie_np = np.frombuffer(selfie_file.read(), np.uint8)
 
         aadhaar_img = cv2.imdecode(aadhaar_np, cv2.IMREAD_COLOR)
         selfie_img = cv2.imdecode(selfie_np, cv2.IMREAD_COLOR)
 
-        # ---------------- OCR ----------------
+        # -------- OCR ----------
         gray = cv2.cvtColor(aadhaar_img, cv2.COLOR_BGR2GRAY)
         extracted_text = pytesseract.image_to_string(gray)
 
         name_score = fuzz.partial_ratio(name.lower(), extracted_text.lower())
         dob_score = fuzz.partial_ratio(dob.lower(), extracted_text.lower())
 
-        # ---------------- Face Match ----------------
+        # -------- Face Match ----------
         aadhaar_resized = cv2.resize(aadhaar_img, (200, 200))
         selfie_resized = cv2.resize(selfie_img, (200, 200))
 
@@ -128,13 +128,12 @@ def home():
 
         face_score = ssim(aadhaar_gray, selfie_gray) * 100
 
-        # ---------------- DECISION ----------------
+        # -------- Decision ----------
         if name_score > 60 and dob_score > 60 and face_score > 40:
 
-            supabase.table("kyc_records").insert({
-                "name": name,
-                "dob": dob,
-                "match_score": round(face_score, 2),
+            supabase.table("verified_users").insert({
+                "name_score": name_score,
+                "face_score": round(face_score, 2),
                 "status": "Verified"
             }).execute()
 
