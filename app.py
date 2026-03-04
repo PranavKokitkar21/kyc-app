@@ -7,22 +7,15 @@ from supabase import create_client
 from rapidfuzz import fuzz
 from skimage.metrics import structural_similarity as ssim
 
-# -------------------------------
-# Flask Setup
-# -------------------------------
 app = Flask(__name__)
 
-# -------------------------------
-# Supabase Setup
-# -------------------------------
+# ---------------- SUPABASE ----------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------------------
-# HTML UI
-# -------------------------------
+# ---------------- UI ----------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -40,7 +33,7 @@ body {
     background: rgba(255,255,255,0.1);
     padding: 30px;
     border-radius: 15px;
-    width: 400px;
+    width: 420px;
     margin: auto;
 }
 input, button {
@@ -54,29 +47,56 @@ button {
     background: #00c6ff;
     color: black;
     font-weight: bold;
+    cursor: pointer;
+}
+label {
+    display: block;
+    text-align: left;
+    margin-top: 10px;
+    font-weight: bold;
+}
+small {
+    display: block;
+    text-align: left;
+    font-size: 12px;
+    color: #ddd;
 }
 </style>
 </head>
 <body>
+
 <h1>KYC Verification System</h1>
+
 <div class="container">
 <form method="POST" enctype="multipart/form-data">
-<input type="text" name="name" placeholder="Enter Name" required>
-<input type="text" name="dob" placeholder="Enter DOB (as in Aadhaar)" required>
-<input type="file" name="aadhaar" required>
-<input type="file" name="selfie" required>
-<button type="submit">Verify</button>
+
+<label>Full Name (as in Aadhaar)</label>
+<input type="text" name="name" placeholder="Enter Full Name" required>
+
+<label>Date of Birth (exact format as in Aadhaar)</label>
+<input type="text" name="dob" placeholder="Example: 2003 or 12/05/2003" required>
+
+<label>Upload Aadhaar Card Image</label>
+<small>Please upload clear front side image of Aadhaar</small>
+<input type="file" name="aadhaar" accept="image/*" required>
+
+<label>Capture Live Selfie</label>
+<small>Use front camera and ensure good lighting</small>
+<input type="file" name="selfie" accept="image/*" capture="user" required>
+
+<button type="submit">Verify KYC</button>
+
 </form>
 </div>
+
 </body>
 </html>
 """
 
-# -------------------------------
-# Home Route
-# -------------------------------
+# ---------------- ROUTE ----------------
 @app.route("/", methods=["GET", "POST"])
 def home():
+
     if request.method == "POST":
 
         name = request.form["name"]
@@ -85,7 +105,7 @@ def home():
         aadhaar_file = request.files["aadhaar"]
         selfie_file = request.files["selfie"]
 
-        # Convert to OpenCV format (memory processing)
+        # Read images in memory (NO local saving)
         aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
         selfie_np = np.frombuffer(selfie_file.read(), np.uint8)
 
@@ -94,41 +114,37 @@ def home():
 
         # ---------------- OCR ----------------
         gray = cv2.cvtColor(aadhaar_img, cv2.COLOR_BGR2GRAY)
-        text = pytesseract.image_to_string(gray)
+        extracted_text = pytesseract.image_to_string(gray)
 
-        name_match = fuzz.partial_ratio(name.lower(), text.lower())
-        dob_match = fuzz.partial_ratio(dob.lower(), text.lower())
+        name_score = fuzz.partial_ratio(name.lower(), extracted_text.lower())
+        dob_score = fuzz.partial_ratio(dob.lower(), extracted_text.lower())
 
         # ---------------- Face Match ----------------
-        aadhaar_face = cv2.resize(aadhaar_img, (200, 200))
-        selfie_face = cv2.resize(selfie_img, (200, 200))
+        aadhaar_resized = cv2.resize(aadhaar_img, (200, 200))
+        selfie_resized = cv2.resize(selfie_img, (200, 200))
 
-        aadhaar_gray = cv2.cvtColor(aadhaar_face, cv2.COLOR_BGR2GRAY)
-        selfie_gray = cv2.cvtColor(selfie_face, cv2.COLOR_BGR2GRAY)
+        aadhaar_gray = cv2.cvtColor(aadhaar_resized, cv2.COLOR_BGR2GRAY)
+        selfie_gray = cv2.cvtColor(selfie_resized, cv2.COLOR_BGR2GRAY)
 
-        score = ssim(aadhaar_gray, selfie_gray)
-        face_match = score * 100
+        face_score = ssim(aadhaar_gray, selfie_gray) * 100
 
-        # ---------------- Decision ----------------
-        if name_match > 60 and dob_match > 60 and face_match > 40:
+        # ---------------- DECISION ----------------
+        if name_score > 60 and dob_score > 60 and face_score > 40:
 
-            # Store in Supabase
             supabase.table("kyc_records").insert({
                 "name": name,
                 "dob": dob,
+                "match_score": round(face_score, 2),
                 "status": "Verified"
             }).execute()
 
-            return "<h2 style='color:green;text-align:center;'>KYC Verified Successfully</h2>"
+            return "<h2 style='color:lightgreen;text-align:center;'>KYC Verified Successfully ✅</h2>"
 
         else:
-            return "<h2 style='color:red;text-align:center;'>KYC Rejected</h2>"
+            return "<h2 style='color:red;text-align:center;'>KYC Rejected ❌</h2>"
 
     return render_template_string(HTML_PAGE)
 
 
-# -------------------------------
-# Render Entry
-# -------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
