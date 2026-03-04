@@ -190,7 +190,7 @@ def home():
         face_score=compare_faces(aadhaar_img,selfie_img)
 
         # decision
-        if name_score>60 and dob_score>60 and face_score>40:
+        if name_score>70 and dob_score>60 and face_score>10:
 
             supabase.table("verified_users").insert({
 
