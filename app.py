@@ -6,20 +6,23 @@ import pytesseract
 from flask import Flask, request, render_template_string
 from supabase import create_client
 from rapidfuzz import fuzz
+from skimage.metrics import structural_similarity as ssim
 
 app = Flask(__name__)
 
-# Supabase setup
+# ---------------- SUPABASE ----------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ---------------- UI ----------------
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
 <title>KYC Verification</title>
+
 <style>
 
 body{
@@ -59,6 +62,7 @@ border-radius:10px;
 }
 
 </style>
+
 </head>
 
 <body>
@@ -129,27 +133,23 @@ alert("Selfie captured");
 </html>
 """
 
-# Histogram face comparison
-def compare_faces_histogram(img1,img2):
+# ---------------- FACE MATCH ----------------
+def compare_faces(img1,img2):
 
     img1=cv2.resize(img1,(200,200))
     img2=cv2.resize(img2,(200,200))
 
-    img1_gray=cv2.cvtColor(img1,cv2.COLOR_BGR2GRAY)
-    img2_gray=cv2.cvtColor(img2,cv2.COLOR_BGR2GRAY)
+    gray1=cv2.cvtColor(img1,cv2.COLOR_BGR2GRAY)
+    gray2=cv2.cvtColor(img2,cv2.COLOR_BGR2GRAY)
 
-    hist1=cv2.calcHist([img1_gray],[0],None,[256],[0,256])
-    hist2=cv2.calcHist([img2_gray],[0],None,[256],[0,256])
-
-    cv2.normalize(hist1,hist1)
-    cv2.normalize(hist2,hist2)
-
-    score=cv2.compareHist(hist1,hist2,cv2.HISTCMP_CORREL)
+    score,_=ssim(gray1,gray2,full=True)
 
     return score*100
 
 
+# ---------------- ROUTE ----------------
 @app.route("/",methods=["GET","POST"])
+
 def home():
 
     if request.method=="POST":
@@ -163,7 +163,7 @@ def home():
         if selfie_data=="":
             return "<h2 style='color:red;text-align:center'>Please capture selfie</h2>"
 
-        # Decode selfie
+        # decode selfie
         header,encoded=selfie_data.split(",",1)
 
         selfie_bytes=base64.b64decode(encoded)
@@ -172,7 +172,7 @@ def home():
 
         selfie_img=cv2.imdecode(selfie_np,cv2.IMREAD_COLOR)
 
-        # Decode Aadhaar
+        # decode aadhaar
         aadhaar_np=np.frombuffer(aadhaar_file.read(),np.uint8)
 
         aadhaar_img=cv2.imdecode(aadhaar_np,cv2.IMREAD_COLOR)
@@ -186,19 +186,22 @@ def home():
 
         dob_score=fuzz.partial_ratio(dob.lower(),extracted_text.lower())
 
-        # Face comparison
-        face_score=compare_faces_histogram(aadhaar_img,selfie_img)
+        # face comparison
+        face_score=compare_faces(aadhaar_img,selfie_img)
 
-        if name_score>60 and dob_score>60 and face_score>30:
+        # decision
+        if name_score>60 and dob_score>60 and face_score>40:
 
             supabase.table("verified_users").insert({
+
                 "name_score":name_score,
                 "face_score":round(face_score,2),
                 "status":"Verified"
+
             }).execute()
 
             return f"""
-            <h2 style='color:lightgreen;text-align:center'>KYC Verified Successfully</h2>
+            <h2 style='color:lightgreen'>KYC Verified Successfully</h2>
 
             <h3>Scores</h3>
 
@@ -210,7 +213,7 @@ def home():
         else:
 
             return f"""
-            <h2 style='color:red;text-align:center'>KYC Rejected</h2>
+            <h2 style='color:red'>KYC Rejected</h2>
 
             <h3>Scores</h3>
 
