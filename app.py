@@ -1,111 +1,134 @@
 import os
-import io
-from flask import Flask, render_template, request
-from supabase import create_client
-from PIL import Image
 import numpy as np
+import cv2
+import pytesseract
+from flask import Flask, request, render_template_string
+from supabase import create_client
+from rapidfuzz import fuzz
 from skimage.metrics import structural_similarity as ssim
 
+# -------------------------------
+# Flask Setup
+# -------------------------------
 app = Flask(__name__)
 
-# 🔒 Prevent large uploads (important for Render free tier)
-app.config['MAX_CONTENT_LENGTH'] = 3 * 1024 * 1024  # 3MB max
-
-# 🔑 Supabase Config (DO NOT hardcode in production, use env vars)
+# -------------------------------
+# Supabase Setup
+# -------------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 🎯 Face matching thresholds
-STRONG_MATCH_THRESHOLD = 0.65
-MANUAL_REVIEW_THRESHOLD = 0.55
+# -------------------------------
+# HTML UI
+# -------------------------------
+HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>KYC Verification</title>
+<style>
+body {
+    font-family: Arial;
+    background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+    color: white;
+    text-align: center;
+    padding: 40px;
+}
+.container {
+    background: rgba(255,255,255,0.1);
+    padding: 30px;
+    border-radius: 15px;
+    width: 400px;
+    margin: auto;
+}
+input, button {
+    width: 100%;
+    padding: 10px;
+    margin: 10px 0;
+    border-radius: 8px;
+    border: none;
+}
+button {
+    background: #00c6ff;
+    color: black;
+    font-weight: bold;
+}
+</style>
+</head>
+<body>
+<h1>KYC Verification System</h1>
+<div class="container">
+<form method="POST" enctype="multipart/form-data">
+<input type="text" name="name" placeholder="Enter Name" required>
+<input type="text" name="dob" placeholder="Enter DOB (as in Aadhaar)" required>
+<input type="file" name="aadhaar" required>
+<input type="file" name="selfie" required>
+<button type="submit">Verify</button>
+</form>
+</div>
+</body>
+</html>
+"""
 
-
-# ================================
+# -------------------------------
 # Home Route
-# ================================
-@app.route("/")
+# -------------------------------
+@app.route("/", methods=["GET", "POST"])
 def home():
-    return render_template("index.html")
+    if request.method == "POST":
 
+        name = request.form["name"]
+        dob = request.form["dob"]
 
-# ================================
-# Image Preprocessing
-# ================================
-def preprocess_image(file):
-    image = Image.open(file).convert("L")  # convert to grayscale
-    image = image.resize((300, 300))       # resize to fixed size
-    return np.array(image)
+        aadhaar_file = request.files["aadhaar"]
+        selfie_file = request.files["selfie"]
 
+        # Convert to OpenCV format (memory processing)
+        aadhaar_np = np.frombuffer(aadhaar_file.read(), np.uint8)
+        selfie_np = np.frombuffer(selfie_file.read(), np.uint8)
 
-# ================================
-# Face Similarity Function
-# ================================
-def calculate_similarity(img1, img2):
-    score, _ = ssim(img1, img2, full=True)
-    return score
+        aadhaar_img = cv2.imdecode(aadhaar_np, cv2.IMREAD_COLOR)
+        selfie_img = cv2.imdecode(selfie_np, cv2.IMREAD_COLOR)
 
+        # ---------------- OCR ----------------
+        gray = cv2.cvtColor(aadhaar_img, cv2.COLOR_BGR2GRAY)
+        text = pytesseract.image_to_string(gray)
 
-# ================================
-# Upload & Verify Route
-# ================================
-@app.route("/upload", methods=["POST"])
-def upload():
+        name_match = fuzz.partial_ratio(name.lower(), text.lower())
+        dob_match = fuzz.partial_ratio(dob.lower(), text.lower())
 
-    name = request.form.get("name")
-    aadhaar_number = request.form.get("aadhaar_number")
-    dob = request.form.get("dob")
+        # ---------------- Face Match ----------------
+        aadhaar_face = cv2.resize(aadhaar_img, (200, 200))
+        selfie_face = cv2.resize(selfie_img, (200, 200))
 
-    aadhaar_image = request.files.get("aadhaar_image")
-    live_image = request.files.get("live_image")
+        aadhaar_gray = cv2.cvtColor(aadhaar_face, cv2.COLOR_BGR2GRAY)
+        selfie_gray = cv2.cvtColor(selfie_face, cv2.COLOR_BGR2GRAY)
 
-    if not aadhaar_image or not live_image:
-        return "Images missing"
+        score = ssim(aadhaar_gray, selfie_gray)
+        face_match = score * 100
 
-    try:
-        # 🔹 Preprocess both images
-        img1 = preprocess_image(aadhaar_image)
-        img2 = preprocess_image(live_image)
+        # ---------------- Decision ----------------
+        if name_match > 60 and dob_match > 60 and face_match > 40:
 
-        similarity_score = calculate_similarity(img1, img2)
-
-        # 🔹 Decide verification status
-        if similarity_score >= STRONG_MATCH_THRESHOLD:
-            verification_status = "VERIFIED"
-            is_verified = True
-
-        elif similarity_score >= MANUAL_REVIEW_THRESHOLD:
-            verification_status = "MANUAL_REVIEW"
-            is_verified = False
-
-        else:
-            verification_status = "REJECTED"
-            is_verified = False
-
-        # 🔹 Only store if VERIFIED
-        if is_verified:
-            supabase.table("verified_users").insert({
+            # Store in Supabase
+            supabase.table("kyc_records").insert({
                 "name": name,
-                "aadhaar_number": aadhaar_number,
                 "dob": dob,
-                "similarity_score": float(similarity_score),
-                "status": verification_status
+                "status": "Verified"
             }).execute()
 
-        return render_template(
-            "result.html",
-            status=verification_status,
-            score=round(similarity_score * 100, 2)
-        )
+            return "<h2 style='color:green;text-align:center;'>KYC Verified Successfully</h2>"
 
-    except Exception as e:
-        print("Error:", e)
-        return "Something went wrong. Please try again."
+        else:
+            return "<h2 style='color:red;text-align:center;'>KYC Rejected</h2>"
+
+    return render_template_string(HTML_PAGE)
 
 
-# ================================
-# Run App
-# ================================
+# -------------------------------
+# Render Entry
+# -------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=10000)
